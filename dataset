@@ -1,0 +1,109 @@
+import os
+import json
+import torch
+from torch.utils.data import Dataset
+from torchvision import datasets, transforms
+from torchvision.datasets.folder import ImageFolder, default_loader
+
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm.data import create_transform
+from torchvision.transforms import InterpolationMode
+from PIL import Image
+
+
+def build_transform(is_train, args):
+    resize_im = args.input_size > 32
+    if is_train:
+        # this should always dispatch to transforms_imagenet_train
+        transform = create_transform(
+            input_size=args.input_size,
+            is_training=True,
+            color_jitter=args.color_jitter,
+            auto_augment=args.aa,
+            interpolation=args.train_interpolation,
+            re_prob=args.reprob,
+            re_mode=args.remode,
+            re_count=args.recount,
+        )
+        if not resize_im:
+            # replace RandomResizedCropAndInterpolation with
+            # RandomCrop
+            transform.transforms[0] = transforms.RandomCrop(
+                args.input_size, padding=4)
+        return transform
+
+    t = []
+    if resize_im:
+        size = int((256 / 224) * args.input_size)
+        t.append(
+            transforms.Resize(size, interpolation=InterpolationMode.BICUBIC),  # to maintain same ratio w.r.t. 224 images
+        )
+        t.append(transforms.CenterCrop(args.input_size))
+
+    t.append(transforms.ToTensor())
+    t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+    return transforms.Compose(t)
+
+
+class Sea_dataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.classes = os.listdir(root_dir)
+        self.task1_label_dict,self.task2_label_dict = self._build_label_dict()
+
+    def __len__(self):
+        return sum(len(os.listdir(os.path.join(self.root_dir, c))) for c in self.classes)
+
+    def __getitem__(self, idx):
+        class_idx = 0
+        for i, c in enumerate(self.classes):
+            class_path = os.path.join(self.root_dir, c)
+            num_samples = len(os.listdir(class_path))
+            if idx < num_samples:
+                class_idx = i
+                break
+            idx -= num_samples
+
+        class_name = self.classes[class_idx]
+        img_name = os.listdir(os.path.join(self.root_dir, class_name))[idx]
+        img_path = os.path.join(self.root_dir, class_name, img_name)
+        image = Image.open(img_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+
+        task1_label = self.task1_label_dict[class_name.split('_')[0]]
+        task2_label = self.task2_label_dict[class_name.split('_')[1]]
+
+        return image, (task1_label, task2_label)
+
+    def _build_label_dict(self):
+        task1_label_dict = {}
+        task2_label_dict = {}
+        task1_flag = 0
+        for i,c in enumerate(os.listdir(self.root_dir)):
+            task1_label, task2_label = c.split('_', 1)
+            task2_label_dict[task2_label] = i
+            if not task1_label in task1_label_dict:
+                task1_label_dict[task1_label] = task1_flag
+                task1_flag = task1_flag + 1
+
+        return task1_label_dict,task2_label_dict
+
+
+
+if __name__ == "__main__":
+    trans = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Resize([320, 320]),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.29, 0.29, 0.29], inplace=True)
+    ])
+    # data augment
+    aug = transforms.RandomAffine(degrees=(-15, 15), translate=(0.05, 0.05), scale=(0.95, 1.05), fill=128)
+    root = '/media/lab509/yyds/ysz/coarse_fine/train'
+    cx = Sea_dataset(root, transform=trans)
+    cxl = torch.utils.data.DataLoader(dataset=cx, batch_size=1, shuffle=False)
+    for i, b in enumerate(cxl):
+        img = b[0]
+        print(i, b)
+        break
